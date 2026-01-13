@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "C:/Users/apten/Documents/ras_4dig_7seg/Cargo.toml" //my cargl.toml
+    ],
+    "rust-analyzer.cargo.allTargets": false //to remove "can't find crate for `test`"
+}
