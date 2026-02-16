@@ -1,24 +1,29 @@
 #![no_std]
 #![no_main]
 
-use bsp::entry;
+use embassy_time::Timer;
 use defmt::*;
 use defmt_rtt as _;
+use embassy_executor::Spawner;
 use embedded_hal::digital::{InputPin, OutputPin};
 use panic_probe as _;
 
 use rp_pico::{
-    self as bsp,
-    hal::gpio::{FunctionSio, SioOutput}
+    hal::{
+        gpio::{FunctionSio, SioOutput, Pin as rpPin, PullDown},
+        clocks::{Clock, init_clocks_and_plls},
+        pac,
+        sio::Sio,
+        watchdog::Watchdog,
+    },
+    pac::interrupt,
 };
 
-use bsp::hal::{
-    clocks::{Clock, init_clocks_and_plls},
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
-    gpio::{Pin as rpPin, PullDown}, 
-};
+
+use portable_atomic::{AtomicU16, Ordering};
+
+static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0);
+
 
 pub struct SevenSegment {
     seg_1_gnd: rpPin<rp_pico::hal::gpio::bank0::Gpio14, FunctionSio<SioOutput>, PullDown>,
@@ -26,7 +31,7 @@ pub struct SevenSegment {
     seg_3_gnd: rpPin<rp_pico::hal::gpio::bank0::Gpio16, FunctionSio<SioOutput>, PullDown>,
     seg_4_gnd: rpPin<rp_pico::hal::gpio::bank0::Gpio17, FunctionSio<SioOutput>, PullDown>,
     
-    a: rpPin<rp_pico::hal::gpio::bank0::Gpio18, FunctionSio<SioOutput>, PullDown>,
+    a: rpPin<rp_pico::hal::gpio::bank0::Gpio18, FunctionSio<SioOutput>,  PullDown>,
     b: rpPin<rp_pico::hal::gpio::bank0::Gpio19, FunctionSio<SioOutput>, PullDown>,
     c: rpPin<rp_pico::hal::gpio::bank0::Gpio20, FunctionSio<SioOutput>, PullDown>,
     d: rpPin<rp_pico::hal::gpio::bank0::Gpio21, FunctionSio<SioOutput>, PullDown>,
@@ -75,55 +80,55 @@ impl SevenSegment {
                 self.g.set_high().unwrap();
                 self.b.set_high().unwrap();
                 self.c.set_high().unwrap();
-             },
-             5 => {
-                self.a.set_high().unwrap();
-                self.f.set_high().unwrap();
-                self.g.set_high().unwrap();
-                self.c.set_high().unwrap();
-                self.d.set_high().unwrap();
-             },
-             6 => {
-                self.a.set_high().unwrap();
-                self.f.set_high().unwrap();
-                self.g.set_high().unwrap();
-                self.c.set_high().unwrap();
-                self.d.set_high().unwrap();
-                self.e.set_high().unwrap();                
-             },
-             7 => {
-                self.f.set_high().unwrap();
-                self.a.set_high().unwrap();
-                self.b.set_high().unwrap();
-                self.c.set_high().unwrap();
-             },
-             8 => {
-                self.a.set_high().unwrap();
-                self.b.set_high().unwrap();
-                self.c.set_high().unwrap();
-                self.d.set_high().unwrap();
-                self.e.set_high().unwrap();
-                self.f.set_high().unwrap();
-                self.g.set_high().unwrap();
-             },
-             9 => {
-                self.a.set_high().unwrap();
-                self.f.set_high().unwrap();
-                self.b.set_high().unwrap();
-                self.g.set_high().unwrap();
-                self.c.set_high().unwrap();
-                self.d.set_high().unwrap();
-             },
-             10 => {
-                self.dp.set_high().unwrap();
-             },
-             _ => {
-                self.a.set_high().unwrap();
-                self.a.set_high().unwrap();
-                self.a.set_high().unwrap();
-                self.a.set_high().unwrap();
-                self.a.set_high().unwrap();
-                self.a.set_high().unwrap();
+            },
+            5 => {
+            self.a.set_high().unwrap();
+            self.f.set_high().unwrap();
+            self.g.set_high().unwrap();
+            self.c.set_high().unwrap();
+            self.d.set_high().unwrap();
+            },
+            6 => {
+            self.a.set_high().unwrap();
+            self.f.set_high().unwrap();
+            self.g.set_high().unwrap();
+            self.c.set_high().unwrap();
+            self.d.set_high().unwrap();
+            self.e.set_high().unwrap();                
+            },
+            7 => {
+            self.f.set_high().unwrap();
+            self.a.set_high().unwrap();
+            self.b.set_high().unwrap();
+            self.c.set_high().unwrap();
+            },
+            8 => {
+            self.a.set_high().unwrap();
+            self.b.set_high().unwrap();
+            self.c.set_high().unwrap();
+            self.d.set_high().unwrap();
+            self.e.set_high().unwrap();
+            self.f.set_high().unwrap();
+            self.g.set_high().unwrap();
+            },
+            9 => {
+            self.a.set_high().unwrap();
+            self.f.set_high().unwrap();
+            self.b.set_high().unwrap();
+            self.g.set_high().unwrap();
+            self.c.set_high().unwrap();
+            self.d.set_high().unwrap();
+            },
+            10 => {
+            self.dp.set_high().unwrap();
+            },
+            _ => {
+            self.a.set_high().unwrap();
+            self.b.set_high().unwrap();
+            self.c.set_high().unwrap();
+            self.d.set_high().unwrap();
+            self.e.set_high().unwrap();
+            self.f.set_high().unwrap();
              }
         }
     }
@@ -144,9 +149,27 @@ impl SevenSegment {
     }
 }
 
-#[entry]
-fn main() -> ! {
-    info!("Program start");
+#[embassy_executor::task]
+async fn seven_segment_task(
+    mut seven_segment: SevenSegment,
+) {
+    loop {
+        let converted_time =  CONVERTED_TIME.load(Ordering::Relaxed);
+        
+        seven_segment.display_digit_number(4, (converted_time / 1000) as u8);
+        Timer::after_micros(700).await;
+        seven_segment.display_digit_number(3, ((converted_time % 1000) / 100) as u8);
+        Timer::after_micros(700).await;
+        seven_segment.display_digit_number(2, (((converted_time % 1000) % 100) / 10) as u8);
+        Timer::after_micros(700).await;
+        seven_segment.display_digit_number(1, (((converted_time % 1000) % 100) % 10) as u8);
+        Timer::after_micros(700).await;
+    }
+}
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    info!("Program start"); 
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
@@ -165,14 +188,14 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
-
-    let pins = bsp::Pins::new(
+    let pins = rp_pico::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
+    
+    unsafe { embassy_rp::time_driver::init(); }
     
     let seg_1_gnd = pins.gpio14.into_push_pull_output();
     let seg_2_gnd = pins.gpio15.into_push_pull_output();
@@ -194,17 +217,22 @@ fn main() -> ! {
     };
 
     let mut button = pins.gpio0.into_pull_up_input();
-    let mut count = 0;
+
+    spawner.spawn(seven_segment_task(seven_segment).unwrap());
+
+
+    let mut time: u16 = 1234;
+    CONVERTED_TIME.store(time, Ordering::Relaxed);
     loop {
-        
-        for i in (1..=4).rev() {
-            delay.delay_us(50);
-
-            if button.is_low().unwrap() {
-                count = (count + 1) % 4;
+        if button.is_low().unwrap() {
+            if time == 1234 {
+                CONVERTED_TIME.store(time, Ordering::Relaxed);
+                time = 4321;
+            } else {
+                CONVERTED_TIME.store(time, Ordering::Relaxed);
+                time = 1234;
             }
-
-            seven_segment.display_digit_number(i, i);
         }
+        Timer::after_millis(10).await;
     }
 }
