@@ -16,6 +16,10 @@ MEMORY {
     /* SCRATCH_B: ORIGIN = 0x20041000, LENGTH = 4K    */
 }
 
+# codes below are copied from rp235x directory
+# https://github.com/embassy-rs/embassy/blob/main/examples/rp235x/memory.x
+# um, idk the reason why it works, do not ask me :(
+
 SECTIONS {
     /* ### Boot ROM info
      *

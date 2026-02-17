@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# from https://github.com/embassy-rs/embassy/blob/main/examples/rp235x/Cargo.toml
+# I replaced 'path' section with git = "" + package = ""
+
 embassy-embedded-hal = { version = "0.5.0", git = "https://github.com/embassy-rs/embassy.git", package = "embassy-embedded-hal", features = ["defmt"] }
 embassy-sync = { version = "0.7.2", git = "https://github.com/embassy-rs/embassy.git", package = "embassy-sync", features = ["defmt"] }
 embassy-executor = { version = "0.9.0", git = "https://github.com/embassy-rs/embassy.git", package = "embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
