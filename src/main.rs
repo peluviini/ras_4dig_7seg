@@ -1,78 +1,206 @@
-//! This example test the RP Pico W on board LED.
+//! This example test the RP Pico on board LED.
 //!
-//! It does not work with the RP Pico board. See blinky.rs.
+//! It does not work with the RP Pico W board. See wifi_blinky.rs.
 
 #![no_std]
 #![no_main]
 
-use cyw43::aligned_bytes;
-use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::{bind_interrupts, dma};
-use embassy_time::{Duration, Timer};
-use static_cell::StaticCell;
+use embassy_rp::gpio::{self, Input};
+use embassy_time::Timer;
+use gpio::{Level, Output};
 use {defmt_rtt as _, panic_probe as _};
 
-bind_interrupts!(struct Irqs {
-    PIO0_IRQ_0 => InterruptHandler<PIO0>;
-    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
-});
+use portable_atomic::{AtomicU16, Ordering};
+
+static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0);
+
+
+pub struct SevenSegment<'a> {
+    seg_1_gnd: Output<'a>,
+    seg_2_gnd: Output<'a>,
+    seg_3_gnd: Output<'a>,
+    seg_4_gnd: Output<'a>,
+    
+    a: Output<'a>,
+    b: Output<'a>,
+    c: Output<'a>,
+    d: Output<'a>,
+    e: Output<'a>,
+    f: Output<'a>,
+    g: Output<'a>,
+    dp: Output<'a>,   
+}
+impl<'a> SevenSegment<'a> {
+
+    pub fn display_digit_number(
+        &mut self,
+        digit: u8,
+        number: u8,
+    ) {
+        self.turn_off_all();
+
+        match digit {
+            4 => self.seg_4_gnd.set_high(),
+            3 => self.seg_3_gnd.set_high(),
+            2 => self.seg_2_gnd.set_high(),
+            1 => self.seg_1_gnd.set_high(),
+            _ => self.seg_1_gnd.set_high(),
+        }
+        match number {
+            1 => {
+                self.b.set_high();
+                self.c.set_high();
+            },
+            2 => {
+                self.a.set_high();
+                self.b.set_high();
+                self.g.set_high();
+                self.e.set_high();
+                self.d.set_high();
+            },
+            3 => {
+                self.a.set_high();
+                self.a.set_high();
+                self.g.set_high();
+                self.c.set_high();
+                self.d.set_high();
+            },
+            4 => {
+                self.f.set_high();
+                self.g.set_high();
+                self.b.set_high();
+                self.c.set_high();
+            },
+            5 => {
+            self.a.set_high();
+            self.f.set_high();
+            self.g.set_high();
+            self.c.set_high();
+            self.d.set_high();
+            },
+            6 => {
+            self.a.set_high();
+            self.f.set_high();
+            self.g.set_high();
+            self.c.set_high();
+            self.d.set_high();
+            self.e.set_high();                
+            },
+            7 => {
+            self.f.set_high();
+            self.a.set_high();
+            self.b.set_high();
+            self.c.set_high();
+            },
+            8 => {
+            self.a.set_high();
+            self.b.set_high();
+            self.c.set_high();
+            self.d.set_high();
+            self.e.set_high();
+            self.f.set_high();
+            self.g.set_high();
+            },
+            9 => {
+            self.a.set_high();
+            self.f.set_high();
+            self.b.set_high();
+            self.g.set_high();
+            self.c.set_high();
+            self.d.set_high();
+            },
+            10 => {
+            self.dp.set_high();
+            },
+            _ => {
+            self.a.set_high();
+            self.b.set_high();
+            self.c.set_high();
+            self.d.set_high();
+            self.e.set_high();
+            self.f.set_high();
+             }
+        }
+    }
+
+    fn turn_off_all(&mut self) {
+        self.seg_1_gnd.set_low();
+        self.seg_2_gnd.set_low();
+        self.seg_3_gnd.set_low();
+        self.seg_4_gnd.set_low();
+        self.a.set_low();
+        self.b.set_low();
+        self.c.set_low();
+        self.d.set_low();
+        self.e.set_low();
+        self.f.set_low();
+        self.g.set_low();
+        self.dp.set_low();
+    }
+}
 
 #[embassy_executor::task]
-async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>) -> ! {
-    runner.run().await
+async fn seven_segment_task(
+    mut seven_segment: SevenSegment<'static>,
+) {
+    loop {
+        let converted_time =  CONVERTED_TIME.load(Ordering::Relaxed);
+        
+        seven_segment.display_digit_number(4, (converted_time / 1000) as u8);
+        Timer::after_micros(700).await;
+        seven_segment.display_digit_number(3, ((converted_time % 1000) / 100) as u8);
+        Timer::after_micros(700).await;
+        seven_segment.display_digit_number(2, (((converted_time % 1000) % 100) / 10) as u8);
+        Timer::after_micros(700).await;
+        seven_segment.display_digit_number(1, (((converted_time % 1000) % 100) % 10) as u8);
+        Timer::after_micros(700).await;
+    }
 }
+
+
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    let fw = aligned_bytes!("../firmware/43439A0.bin");
-    let clm = aligned_bytes!("../firmware/43439A0_clm.bin");
-    let nvram = aligned_bytes!("../firmware/nvram_rp2040.bin");
+    
+    let seg_1_gnd = Output::new(p.PIN_14, Level::Low);
+    let seg_2_gnd = Output::new(p.PIN_15, Level::Low);
+    let seg_3_gnd = Output::new(p.PIN_16, Level::Low);
+    let seg_4_gnd = Output::new(p.PIN_17, Level::Low);
 
-    // To make flashing faster for development, you may want to flash the firmwares independently
-    // at hardcoded addresses, instead of baking them into the program with `include_bytes!`:
-    //     probe-rs download ../../cyw43-firmware/43439A0.bin --binary-format bin --chip RP2040 --base-address 0x10100000
-    //     probe-rs download ../../cyw43-firmware/43439A0_clm.bin --binary-format bin --chip RP2040 --base-address 0x10140000
-    //let fw = unsafe { core::slice::from_raw_parts(0x10100000 as *const u8, 230321) };
-    //let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
+    let a = Output::new(p.PIN_18, Level::Low);
+    let b = Output::new(p.PIN_19, Level::Low);
+    let c = Output::new(p.PIN_20, Level::Low);
+    let d = Output::new(p.PIN_21, Level::Low);
+    let e = Output::new(p.PIN_22, Level::Low);
+    let f = Output::new(p.PIN_26, Level::Low);
+    let g = Output::new(p.PIN_27, Level::Low);
+    let dp = Output::new(p.PIN_28, Level::Low);
 
-    let pwr = Output::new(p.PIN_23, Level::Low);
-    let cs = Output::new(p.PIN_25, Level::High);
-    let mut pio = Pio::new(p.PIO0, Irqs);
-    let spi = PioSpi::new(
-        &mut pio.common,
-        pio.sm0,
-        DEFAULT_CLOCK_DIVIDER,
-        pio.irq0,
-        cs,
-        p.PIN_24,
-        p.PIN_29,
-        dma::Channel::new(p.DMA_CH0, Irqs),
-    );
+    let seven_segment = SevenSegment{
+        seg_1_gnd, seg_2_gnd, seg_3_gnd, seg_4_gnd,
+        a, b, c, d, e, f, g, dp
+    };
 
-    static STATE: StaticCell<cyw43::State> = StaticCell::new();
-    let state = STATE.init(cyw43::State::new());
-    let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
-    spawner.spawn(unwrap!(cyw43_task(runner)));
+    let button = Input::new(p.PIN_0, gpio::Pull::Up);
 
-    control.init(clm).await;
-    control
-        .set_power_management(cyw43::PowerManagementMode::PowerSave)
-        .await;
+    spawner.spawn(seven_segment_task(seven_segment).unwrap());
 
-    let delay = Duration::from_secs(1);
+
+    let mut time: u16 = 1234;
+    CONVERTED_TIME.store(time, Ordering::Relaxed);
     loop {
-        info!("led on!");
-        control.gpio_set(0, true).await;
-        Timer::after(delay).await;
-
-        info!("led off!");
-        control.gpio_set(0, false).await;
-        Timer::after(delay).await;
+        if button.is_low() {
+            if time == 1234 {
+                CONVERTED_TIME.store(time, Ordering::Relaxed);
+                time = 4321;
+            } else {
+                CONVERTED_TIME.store(time, Ordering::Relaxed);
+                time = 1234;
+            }
+        }
+        Timer::after_millis(50).await;
     }
 }
