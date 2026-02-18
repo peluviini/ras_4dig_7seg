@@ -3,14 +3,22 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{self, Input};
+use embassy_rp::{
+    gpio::{self, Input},
+    rtc::{DateTime, DayOfWeek, Rtc},
+    bind_interrupts,
+};
 use embassy_time::Timer;
 use gpio::{Level, Output};
 use {defmt_rtt as _, panic_probe as _};
 
 use portable_atomic::{AtomicU16, Ordering};
 
-static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0);
+static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0); //4 digits, hour and minute
+
+bind_interrupts!(struct Irqs {
+    RTC_IRQ => embassy_rp::rtc::InterruptHandler;
+});
 
 pub struct SevenSegment<'a> {
     seg_1_gnd: Output<'a>, //assuming pins connecting mosfet's gate
@@ -157,6 +165,20 @@ async fn seven_segment_task(
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+
+    let mut rtc = Rtc::new(p.RTC, Irqs);
+    if !rtc.is_running() {
+        let birthday = DateTime {
+            year: 2007,
+            month: 4,
+            day: 16,
+            day_of_week: DayOfWeek::Monday,
+            hour: 7,
+            minute: 0,
+            second: 0,
+        };
+        rtc.set_datetime(birthday).unwrap();
+    }
     
     let seg_1_gnd = Output::new(p.PIN_14, Level::Low);
     let seg_2_gnd = Output::new(p.PIN_15, Level::Low);
@@ -184,16 +206,13 @@ async fn main(spawner: Spawner) {
 
     let mut time: u16 = 1234;
     CONVERTED_TIME.store(time, Ordering::Relaxed);
+
+    Timer::after_millis(1000).await;
+
     loop {
-        if button.is_low() {
-            if time == 1234 {
-                CONVERTED_TIME.store(time, Ordering::Relaxed);
-                time = 4321;
-            } else {
-                CONVERTED_TIME.store(time, Ordering::Relaxed);
-                time = 1234;
-            }
+        if let Ok(dt) = rtc.now() {
+            CONVERTED_TIME.store((dt.hour as u16 * 100 as u16 + dt.minute as u16) as u16, Ordering::Relaxed);
         }
-        Timer::after_millis(50).await;
+        Timer::after_millis(200).await;
     }
 }
