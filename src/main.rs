@@ -403,7 +403,7 @@ async fn main(spawner: Spawner) {
              */
             #[allow(unused)]
             #[derive(Deserialize)]
-            struct UnixEpoch<'a> {
+            struct UnixTime<'a> {
                 id: &'a str,
                 it: f64,
                 st: f64,
@@ -413,10 +413,10 @@ async fn main(spawner: Spawner) {
             }
 
             let bytes = body.as_bytes();
-            match from_slice::<UnixEpoch>(bytes) {
-                Ok((epoch, _used)) => {
-                    let mut st = epoch.st;
-                    st += 9. * 3600.; //JSt
+            match from_slice::<UnixTime>(bytes) {
+                Ok((unix, _used)) => {
+                    let mut st = unix.st;
+                    st += 9. * 3600.; //JST
                     let (year, month, day, hour, minute, second) = { secs_to_datetime(st as i64) };
                     
                     let date = DateTime {
