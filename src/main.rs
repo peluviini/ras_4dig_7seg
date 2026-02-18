@@ -1,16 +1,20 @@
 #![no_std]
 #![no_main]
 
+use heapless::String;
+use core::write;
+use core::fmt::Write;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_rp::{
     gpio::{self, Input},
     rtc::{DateTime, DayOfWeek, Rtc},
     bind_interrupts,
-    pio::{InterruptHandler, Pio},
-    peripherals::{DMA_CH0, PIO0},
+    pio::{InterruptHandler as PioIrHandler, Pio},
+    peripherals::{DMA_CH0, PIO0, USB},
     dma,
     clocks::RoscRng,
+    usb::{Driver, InterruptHandler as UsbIrHandler},
 };
 use embassy_time::{Duration, Timer};
 
@@ -34,6 +38,11 @@ use serde_json_core::from_slice;
 use static_cell::StaticCell;
 use datealgo::secs_to_datetime;
 
+use embassy_usb::{
+    UsbDevice,
+    class::cdc_acm::{CdcAcmClass, State},
+};
+
 use portable_atomic::{AtomicU16, Ordering};
 
 static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0); //4 digits, hour and minute
@@ -41,8 +50,10 @@ static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0); //4 digits, hour and minut
 bind_interrupts!(struct Irqs {
     RTC_IRQ => embassy_rp::rtc::InterruptHandler;
 
-    PIO0_IRQ_0 => InterruptHandler<PIO0>;
+    PIO0_IRQ_0 => PioIrHandler<PIO0>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
+
+    USBCTRL_IRQ => UsbIrHandler<USB>;
 });
 
 const WIFI_NETWORK: &str = "pelu's Nothing Phone";
@@ -199,19 +210,20 @@ async fn seven_segment_task(
     }
 }
 
+type MyUsbDriver = Driver<'static, USB>;
+type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
+#[embassy_executor::task]
+async fn usb_task(mut usb: MyUsbDevice) -> ! {
+    usb.run().await
+}
+
+
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
 //initialization
     let p = embassy_rp::init(Default::default());
-    let mut led = Output::new(p.PIN_3, Level::Low);
-    let mut debug_led = async move |num: u8| {
-        for _ in 0..=num {
-            led.set_high();
-            Timer::after_millis(500).await;
-            led.set_low();
-            Timer::after_millis(500).await;
-        }
-    };
+
     let mut rtc = Rtc::new(p.RTC, Irqs);
     if !rtc.is_running() {
         let birthday = DateTime {
@@ -270,7 +282,41 @@ async fn main(spawner: Spawner) {
     }
     stack.wait_link_up().await;
     stack.wait_config_up().await;
-    
+
+    let driver = Driver::new(p.USB, Irqs);
+    let config = {
+        let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
+        config.manufacturer = Some("Embassy");
+        config.product = Some("USB-serial example");
+        config.serial_number = Some("12345678");
+        config.max_power = 100;
+        config.max_packet_size_0 = 64;
+        config
+    };
+    let mut builder = {
+        static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+        static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+        static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+        let builder = embassy_usb::Builder::new(
+            driver,
+            config,
+            CONFIG_DESCRIPTOR.init([0; 256]),
+            BOS_DESCRIPTOR.init([0; 256]),
+            &mut [], // no msos descriptors
+            CONTROL_BUF.init([0; 64]),
+        );
+        builder
+    };
+    let mut class = {
+        static STATE: StaticCell<State> = StaticCell::new();
+        let state = STATE.init(State::new());
+        CdcAcmClass::new(&mut builder, state, 64)
+    };
+    let usb = builder.build();
+    spawner.spawn(unwrap!(usb_task(usb)));
+
+
 //pinout
     let seg_1_gnd = Output::new(p.PIN_14, Level::Low);
     let seg_2_gnd = Output::new(p.PIN_15, Level::Low);
@@ -307,7 +353,9 @@ async fn main(spawner: Spawner) {
             let mut request = match http_client.request(Method::GET, url).await {
                 Ok(req) => req,
                 Err(e) => {
-                    debug_led(1).await;
+                    let mut buf: String<64> = String::new();
+                    write!(&mut buf, "Error req: {:?}\r\n", e).ok();
+                    let _ = class.write_packet(buf.as_bytes()).await;
                     Timer::after(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -315,6 +363,9 @@ async fn main(spawner: Spawner) {
             let response = match request.send(&mut rx_buffer).await {
                 Ok(resp) => resp,
                 Err(e) => {
+                    let mut buf: String<64> = String::new();
+                    write!(&mut buf, "Error res: {:?}\r\n", e).ok();
+                    let _ = class.write_packet(buf.as_bytes()).await;
                     Timer::after(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -322,6 +373,9 @@ async fn main(spawner: Spawner) {
             let body_bytes = match response.body().read_to_end().await {
                 Ok(b) => b,
                 Err(_e) => {
+                    let mut buf: String<64> = String::new();
+                    write!(&mut buf, "Error byte: {:?}\r\n", _e).ok();
+                    let _ = class.write_packet(buf.as_bytes()).await;
                     Timer::after(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -329,6 +383,9 @@ async fn main(spawner: Spawner) {
             let body = match from_utf8(body_bytes) {
                 Ok(b) => b,
                 Err(_e) => {
+                    let mut buf: String<64> = String::new();
+                    write!(&mut buf, "Error body: {:?}\r\n", _e).ok();
+                    let _ = class.write_packet(buf.as_bytes()).await;
                     Timer::after(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -353,16 +410,11 @@ async fn main(spawner: Spawner) {
                 next: u64,
                 step: u8,
             }
-            #[derive(Deserialize)]
-            struct HttpBinResponse<'a> {
-                #[serde(borrow)]
-                unix_epoch: UnixEpoch<'a>,
-            }
 
             let bytes = body.as_bytes();
-            match from_slice::<HttpBinResponse>(bytes) {
-                Ok((output, _used)) => {
-                    let mut st = output.unix_epoch.st;
+            match from_slice::<UnixEpoch>(bytes) {
+                Ok((epoch, _used)) => {
+                    let mut st = epoch.st;
                     st += 9. * 3600.; //JSt
                     let (year, month, day, hour, minute, second) = { secs_to_datetime(st as i64) };
                     
@@ -378,7 +430,9 @@ async fn main(spawner: Spawner) {
                     rtc.set_datetime(date).unwrap();
                 }
                 Err(e) => {
-                    debug_led(5).await;
+                    let mut buf: String<64> = String::new();
+                    write!(&mut buf, "Error buf: {:?}\r\n", e).ok();
+                    let _ = class.write_packet(buf.as_bytes()).await;
                 }
             }
         }
