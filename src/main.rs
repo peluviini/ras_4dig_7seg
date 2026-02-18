@@ -392,15 +392,16 @@ async fn main(spawner: Spawner) {
             };
             /*
             curl http://3fe5a5f690efc790d4764f1c528a4ebb89fa4168.nict.go.jp/cgi-bin/json
-                {
-                "id": "ntp-a1.nict.go.jp",
-                "it": 0.000,
-                "st": 1771404213.672,
-                "leap": 36,
-                "next": 1483228800,
-                "step": 1
-                }
+            {
+            "id": "ntp-a1.nict.go.jp",
+            "it": 0.000,
+            "st": 1771404213.672,
+            "leap": 36,
+            "next": 1483228800,
+            "step": 1
+            }
              */
+            #[allow(unused)]
             #[derive(Deserialize)]
             struct UnixEpoch<'a> {
                 id: &'a str,
