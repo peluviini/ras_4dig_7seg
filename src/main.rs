@@ -59,16 +59,17 @@ bind_interrupts!(struct Irqs {
 const WIFI_NETWORK: &str = "pelu's Nothing Phone";
 const WIFI_PASSWORD: &str = "kws8b8tj";
 
+//for wifi
 #[embassy_executor::task]
 async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>) -> ! {
     runner.run().await
 }
-
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
     runner.run().await
 }
 
+//to treat 7 segment
 pub struct SevenSegment<'a> {
     seg_1_gnd: Output<'a>, //assuming pins connecting mosfet's gate
     seg_2_gnd: Output<'a>, //so that cathode is connected to gnd through drain and source
@@ -125,53 +126,53 @@ impl<'a> SevenSegment<'a> {
                 self.c.set_high();
             },
             5 => {
-            self.a.set_high();
-            self.f.set_high();
-            self.g.set_high();
-            self.c.set_high();
-            self.d.set_high();
+                self.a.set_high();
+                self.f.set_high();
+                self.g.set_high();
+                self.c.set_high();
+                self.d.set_high();
             },
             6 => {
-            self.a.set_high();
-            self.f.set_high();
-            self.g.set_high();
-            self.c.set_high();
-            self.d.set_high();
-            self.e.set_high();                
+                self.a.set_high();
+                self.f.set_high();
+                self.g.set_high();
+                self.c.set_high();
+                self.d.set_high();
+                self.e.set_high();
             },
             7 => {
-            self.f.set_high();
-            self.a.set_high();
-            self.b.set_high();
-            self.c.set_high();
+                self.f.set_high(); //there stil remains a strong debate about wheather f is needed, at least on me
+                self.a.set_high();
+                self.b.set_high();
+                self.c.set_high();
             },
             8 => {
-            self.a.set_high();
-            self.b.set_high();
-            self.c.set_high();
-            self.d.set_high();
-            self.e.set_high();
-            self.f.set_high();
-            self.g.set_high();
+                self.a.set_high();
+                self.b.set_high();
+                self.c.set_high();
+                self.d.set_high();
+                self.e.set_high();
+                self.f.set_high();
+                self.g.set_high();
             },
             9 => {
-            self.a.set_high();
-            self.f.set_high();
-            self.b.set_high();
-            self.g.set_high();
-            self.c.set_high();
-            self.d.set_high();
+                self.a.set_high();
+                self.f.set_high();
+                self.b.set_high();
+                self.g.set_high();
+                self.c.set_high();
+                self.d.set_high();
             },
             10 => {
-            self.dp.set_high();
+                self.dp.set_high();
             },
             _ => {
-            self.a.set_high();
-            self.b.set_high();
-            self.c.set_high();
-            self.d.set_high();
-            self.e.set_high();
-            self.f.set_high();
+                self.a.set_high(); //0 and sth other than 0~9
+                self.b.set_high();
+                self.c.set_high();
+                self.d.set_high();
+                self.e.set_high();
+                self.f.set_high();
              }
         }
     }
@@ -191,7 +192,7 @@ impl<'a> SevenSegment<'a> {
         self.dp.set_low();
     }
 }
-
+//continue to light 7 segment behind main
 #[embassy_executor::task]
 async fn seven_segment_task(
     mut seven_segment: SevenSegment<'static>,
@@ -210,6 +211,7 @@ async fn seven_segment_task(
     }
 }
 
+//for seriel
 type MyUsbDriver = Driver<'static, USB>;
 type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
 #[embassy_executor::task]
@@ -218,12 +220,12 @@ async fn usb_task(mut usb: MyUsbDevice) -> ! {
 }
 
 
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
 //initialization
     let p = embassy_rp::init(Default::default());
 
+    //rtc
     let mut rtc = Rtc::new(p.RTC, Irqs);
     if !rtc.is_running() {
         let birthday = DateTime {
@@ -232,12 +234,13 @@ async fn main(spawner: Spawner) {
             day: 16,
             day_of_week: DayOfWeek::Monday,
             hour: 7,
-            minute: 0,
+            minute: 0, //can someone let me know what time was I born 
             second: 0,
         };
         rtc.set_datetime(birthday).unwrap();
     }
 
+    //wifi
     let fw = aligned_bytes!("../firmware/43439A0.bin");
     let clm = aligned_bytes!("../firmware/43439A0_clm.bin");
     let nvram = aligned_bytes!("../firmware/nvram_rp2040.bin");
@@ -283,6 +286,7 @@ async fn main(spawner: Spawner) {
     stack.wait_link_up().await;
     stack.wait_config_up().await;
 
+    //seriel (to debug
     let driver = Driver::new(p.USB, Irqs);
     let config = {
         let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -338,10 +342,11 @@ async fn main(spawner: Spawner) {
     };
     spawner.spawn(seven_segment_task(seven_segment).unwrap());
     
-    let button = Input::new(p.PIN_0, gpio::Pull::Up);
+    let button = Input::new(p.PIN_0, gpio::Pull::Up); //you need to connect kinda, pin to button to gnd
 
 //run
     loop {
+        //get current time when button is pushed
         if button.is_low() {
             let mut rx_buffer = [0; 4096];
             let client_state = TcpClientState::<1, 4096, 4096>::new();
@@ -438,7 +443,7 @@ async fn main(spawner: Spawner) {
             }
         }
 
-
+        //send time from rtc to 7 segment
         if let Ok(dt) = rtc.now() {
             CONVERTED_TIME.store((dt.hour as u16 * 100 as u16 + dt.minute as u16) as u16, Ordering::Relaxed);
         }
