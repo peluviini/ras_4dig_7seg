@@ -1,7 +1,3 @@
-//! This example test the RP Pico on board LED.
-//!
-//! It does not work with the RP Pico W board. See wifi_blinky.rs.
-
 #![no_std]
 #![no_main]
 
@@ -16,10 +12,9 @@ use portable_atomic::{AtomicU16, Ordering};
 
 static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0);
 
-
 pub struct SevenSegment<'a> {
-    seg_1_gnd: Output<'a>,
-    seg_2_gnd: Output<'a>,
+    seg_1_gnd: Output<'a>, //assuming pins connecting mosfet's gate
+    seg_2_gnd: Output<'a>, //so that cathode is connected to gnd through drain and source
     seg_3_gnd: Output<'a>,
     seg_4_gnd: Output<'a>,
     
@@ -30,7 +25,7 @@ pub struct SevenSegment<'a> {
     e: Output<'a>,
     f: Output<'a>,
     g: Output<'a>,
-    dp: Output<'a>,   
+    dp: Output<'a>,
 }
 impl<'a> SevenSegment<'a> {
 
@@ -62,7 +57,7 @@ impl<'a> SevenSegment<'a> {
             },
             3 => {
                 self.a.set_high();
-                self.a.set_high();
+                self.b.set_high();
                 self.g.set_high();
                 self.c.set_high();
                 self.d.set_high();
@@ -159,8 +154,6 @@ async fn seven_segment_task(
     }
 }
 
-
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -171,13 +164,13 @@ async fn main(spawner: Spawner) {
     let seg_4_gnd = Output::new(p.PIN_17, Level::Low);
 
     let a = Output::new(p.PIN_18, Level::Low);
-    let b = Output::new(p.PIN_19, Level::Low);
-    let c = Output::new(p.PIN_20, Level::Low);
-    let d = Output::new(p.PIN_21, Level::Low);
-    let e = Output::new(p.PIN_22, Level::Low);
-    let f = Output::new(p.PIN_26, Level::Low);
-    let g = Output::new(p.PIN_27, Level::Low);
-    let dp = Output::new(p.PIN_28, Level::Low);
+    let b = Output::new(p.PIN_20, Level::Low);
+    let c = Output::new(p.PIN_21, Level::Low);
+    let d = Output::new(p.PIN_27, Level::Low);
+    let e = Output::new(p.PIN_28, Level::Low);
+    let f = Output::new(p.PIN_19, Level::Low);
+    let g = Output::new(p.PIN_22, Level::Low);
+    let dp = Output::new(p.PIN_26, Level::Low);
 
     let seven_segment = SevenSegment{
         seg_1_gnd, seg_2_gnd, seg_3_gnd, seg_4_gnd,
