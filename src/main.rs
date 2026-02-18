@@ -7,10 +7,32 @@ use embassy_rp::{
     gpio::{self, Input},
     rtc::{DateTime, DayOfWeek, Rtc},
     bind_interrupts,
+    pio::{InterruptHandler, Pio},
+    peripherals::{DMA_CH0, PIO0},
+    dma,
+    clocks::RoscRng,
 };
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
+
 use gpio::{Level, Output};
 use {defmt_rtt as _, panic_probe as _};
+
+use cyw43::{JoinOptions, aligned_bytes};
+use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
+use embassy_net::{
+    dns::DnsSocket,
+    tcp::client::{TcpClient, TcpClientState},
+    {Config, StackResources},
+};
+use reqwless::{
+    request::Method,
+    client::HttpClient,
+};
+use core::str::from_utf8;
+use serde::Deserialize;
+use serde_json_core::from_slice;
+use static_cell::StaticCell;
+use datealgo::secs_to_datetime;
 
 use portable_atomic::{AtomicU16, Ordering};
 
@@ -18,7 +40,23 @@ static CONVERTED_TIME: AtomicU16 = AtomicU16::new(0); //4 digits, hour and minut
 
 bind_interrupts!(struct Irqs {
     RTC_IRQ => embassy_rp::rtc::InterruptHandler;
+
+    PIO0_IRQ_0 => InterruptHandler<PIO0>;
+    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
 });
+
+const WIFI_NETWORK: &str = "pelu's Nothing Phone";
+const WIFI_PASSWORD: &str = "kws8b8tj";
+
+#[embassy_executor::task]
+async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>) -> ! {
+    runner.run().await
+}
+
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
+}
 
 pub struct SevenSegment<'a> {
     seg_1_gnd: Output<'a>, //assuming pins connecting mosfet's gate
@@ -36,7 +74,6 @@ pub struct SevenSegment<'a> {
     dp: Output<'a>,
 }
 impl<'a> SevenSegment<'a> {
-
     pub fn display_digit_number(
         &mut self,
         digit: u8,
@@ -164,8 +201,17 @@ async fn seven_segment_task(
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+//initialization
     let p = embassy_rp::init(Default::default());
-
+    let mut led = Output::new(p.PIN_3, Level::Low);
+    let mut debug_led = async move |num: u8| {
+        for _ in 0..=num {
+            led.set_high();
+            Timer::after_millis(500).await;
+            led.set_low();
+            Timer::after_millis(500).await;
+        }
+    };
     let mut rtc = Rtc::new(p.RTC, Irqs);
     if !rtc.is_running() {
         let birthday = DateTime {
@@ -179,7 +225,53 @@ async fn main(spawner: Spawner) {
         };
         rtc.set_datetime(birthday).unwrap();
     }
+
+    let fw = aligned_bytes!("../firmware/43439A0.bin");
+    let clm = aligned_bytes!("../firmware/43439A0_clm.bin");
+    let nvram = aligned_bytes!("../firmware/nvram_rp2040.bin");
+
+    let pwr = Output::new(p.PIN_23, Level::Low);
+    let cs = Output::new(p.PIN_25, Level::High);
+    let mut pio = Pio::new(p.PIO0, Irqs);
+    let spi = PioSpi::new(
+        &mut pio.common,
+        pio.sm0,
+        DEFAULT_CLOCK_DIVIDER,
+        pio.irq0,
+        cs,
+        p.PIN_24,
+        p.PIN_29,
+        dma::Channel::new(p.DMA_CH0, Irqs),
+    );
+
+    static STATE: StaticCell<cyw43::State> = StaticCell::new();
+    let state = STATE.init(cyw43::State::new());
+    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
+    spawner.spawn(unwrap!(cyw43_task(runner)));
+
+    control.init(clm).await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
+
+    let config = Config::dhcpv4(Default::default());
+    let mut rng = RoscRng;
+    let seed = rng.next_u64();
+    static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
+    let (stack, runner) = embassy_net::new(net_device, config, RESOURCES.init(StackResources::new()), seed);
+
+    spawner.spawn(unwrap!(net_task(runner)));
+
+    while let Err(err) = control
+        .join(WIFI_NETWORK, JoinOptions::new(WIFI_PASSWORD.as_bytes()))
+        .await
+    {
+        info!("join failed: {:?}", err);
+    }
+    stack.wait_link_up().await;
+    stack.wait_config_up().await;
     
+//pinout
     let seg_1_gnd = Output::new(p.PIN_14, Level::Low);
     let seg_2_gnd = Output::new(p.PIN_15, Level::Low);
     let seg_3_gnd = Output::new(p.PIN_16, Level::Low);
@@ -198,15 +290,105 @@ async fn main(spawner: Spawner) {
         seg_1_gnd, seg_2_gnd, seg_3_gnd, seg_4_gnd,
         a, b, c, d, e, f, g, dp
     };
-
+    spawner.spawn(seven_segment_task(seven_segment).unwrap());
+    
     let button = Input::new(p.PIN_0, gpio::Pull::Up);
 
-    spawner.spawn(seven_segment_task(seven_segment).unwrap());
-
+//run
     loop {
+        if button.is_low() {
+            let mut rx_buffer = [0; 4096];
+            let client_state = TcpClientState::<1, 4096, 4096>::new();
+            let tcp_client = TcpClient::new(stack, &client_state);
+            let dns_client = DnsSocket::new(stack);
+            let mut http_client = HttpClient::new(&tcp_client, &dns_client);
+            let url = "http://3fe5a5f690efc790d4764f1c528a4ebb89fa4168.nict.go.jp/cgi-bin/json";
+
+            let mut request = match http_client.request(Method::GET, url).await {
+                Ok(req) => req,
+                Err(e) => {
+                    debug_led(1).await;
+                    Timer::after(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let response = match request.send(&mut rx_buffer).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    Timer::after(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let body_bytes = match response.body().read_to_end().await {
+                Ok(b) => b,
+                Err(_e) => {
+                    Timer::after(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let body = match from_utf8(body_bytes) {
+                Ok(b) => b,
+                Err(_e) => {
+                    Timer::after(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            /*
+            curl http://3fe5a5f690efc790d4764f1c528a4ebb89fa4168.nict.go.jp/cgi-bin/json
+                {
+                "id": "ntp-a1.nict.go.jp",
+                "it": 0.000,
+                "st": 1771404213.672,
+                "leap": 36,
+                "next": 1483228800,
+                "step": 1
+                }
+             */
+            #[derive(Deserialize)]
+            struct UnixEpoch<'a> {
+                id: &'a str,
+                it: f64,
+                st: f64,
+                leap: u8,
+                next: u64,
+                step: u8,
+            }
+            #[derive(Deserialize)]
+            struct HttpBinResponse<'a> {
+                #[serde(borrow)]
+                unix_epoch: UnixEpoch<'a>,
+            }
+
+            let bytes = body.as_bytes();
+            match from_slice::<HttpBinResponse>(bytes) {
+                Ok((output, _used)) => {
+                    let mut st = output.unix_epoch.st;
+                    st += 9. * 3600.; //JSt
+                    let (year, month, day, hour, minute, second) = { secs_to_datetime(st as i64) };
+                    
+                    let date = DateTime {
+                        year: year as u16,
+                        month: month,
+                        day: day,
+                        day_of_week: DayOfWeek::Monday, //I dont need it so no matter what its ok
+                        hour: hour,
+                        minute: minute,
+                        second: second,
+                    };
+                    rtc.set_datetime(date).unwrap();
+                }
+                Err(e) => {
+                    debug_led(5).await;
+                }
+            }
+        }
+
+
         if let Ok(dt) = rtc.now() {
             CONVERTED_TIME.store((dt.hour as u16 * 100 as u16 + dt.minute as u16) as u16, Ordering::Relaxed);
         }
+
+
         Timer::after_millis(200).await;
     }
 }
