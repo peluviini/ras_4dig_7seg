@@ -203,12 +203,6 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(seven_segment_task(seven_segment).unwrap());
 
-
-    let mut time: u16 = 1234;
-    CONVERTED_TIME.store(time, Ordering::Relaxed);
-
-    Timer::after_millis(1000).await;
-
     loop {
         if let Ok(dt) = rtc.now() {
             CONVERTED_TIME.store((dt.hour as u16 * 100 as u16 + dt.minute as u16) as u16, Ordering::Relaxed);
